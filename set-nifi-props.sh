@@ -3,12 +3,17 @@
 #--------------------------------------------------------------------------------
 # Configure Apache NiFi conf/bootstrap.conf and conf/nifi.properties files.
 #--------------------------------------------------------------------------------
+# defaults
+#------------------------------------------------------------
 
 BOOTSTRAP=conf/bootstrap.conf
 PROPERTIES=conf/nifi.properties
+DEFAULT_JAVA_VER=7
 
 # configure based on host OS (assumes Linux)
 #------------------------------------------------------------
+
+JAVA_VER=${1:-${DEFAULT_JAVA_VER}}
 
 OS=$(uname)
 if [ "$OS" == "" ]; then
@@ -112,11 +117,20 @@ function add_option {
     fi
 }
 
-# separate entries by a space for multiple arguments"
-ARGS_ON="java.arg.debug java.arg.7 java.arg.8 java.arg.9 java.arg.11 java.arg.12 java.arg.13 java.arg.14"
-ARGS_OFF=""
-ARGS_ADD="java.arg.15=-Djava.security.egd=file:///dev/./urandom"
-ARG_AFTER="java.arg.14"
+# Separate entries by a space for multiple arguments.
+# ARG_AFTER is a marker for additions, it can be commented out and still work.
+
+if [ "${JAVA_VER}" == "7" ]; then
+    ARGS_ON="java.arg.debug java.arg.7 java.arg.8 java.arg.9 java.arg.11 java.arg.12 java.arg.13 java.arg.14"
+    ARGS_OFF=""
+    ARGS_ADD="java.arg.15=-Djava.security.egd=file:///dev/./urandom"
+    ARG_AFTER="java.arg.14"
+else
+    ARGS_ON="java.arg.debug java.arg.14"
+    ARGS_OFF=""
+    ARGS_ADD="java.arg.15=-Djava.security.egd=file:///dev/./urandom"
+    ARG_AFTER="java.arg.14"
+fi
 
 for ON_ARG in $ARGS_ON; do
     option_on $ON_ARG
