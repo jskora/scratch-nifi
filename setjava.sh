@@ -20,27 +20,19 @@ else
     echo "Target version = $TGTVER"
 fi
 
-# Verify script was sourced if change Java version.
+# Verify script was sourced if changing Java version.
 #------------------------------------------------------------
 SOURCED=no
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then
     SOURCED=yes
 fi
-if [ "${TGTVER}" != "X" -a "${SOURCED}" == "no" ]; then
-    echo "--------------------------------------------------"
-    echo "This script must be sourced to work with either"
-    echo "    \$ source $(basename $0)"
-    echo "or"
-    echo "    \$ . $(basename $0)"
-    echo "--------------------------------------------------"
-    return -1
-fi
 
 # Create path with Java removed and build new paths based on
 # the requested Java version.
 #------------------------------------------------------------
+#NOJAVA_PATH=$(echo $PATH | sed "s#:[^:]*'${JAVA7BASE}[^:]*:#:#g" | sed "s#:[^:]*'${JAVA8BASE}[^:]*:#:#g")
 NOJAVA_PATH=$(echo $PATH | sed "s#\(:\|^\)[^:]*/jdk1.[78][^:]*\(:\|\$\)#:#g")
-echo "NOJAVA=$NOJAVA_PATH"
+#echo "NOJAVA_PATH=${NOJAVA_PATH}"
 
 if [ "${TGTVER}" == "7" ]; then
     export JAVA_HOME=${JAVA7BASE}
@@ -65,6 +57,17 @@ echo "---------------------------"
 echo "JAVA_HOME=$JAVA_HOME"
 echo "PATH=$PATH" | grep -P --color=auto "(:|=)[^:]*/jdk[^:]*(:|$)"
 echo "MAVEN_OPTS=${MAVEN_OPTS}" | grep -P --color=auto "(?<==).*$"
+
+if [ "${TGTVER}" != "X" -a "${SOURCED}" == "no" ]; then
+    echo "--------------------------------------------------"
+    echo "This script must be sourced to work with either"
+    echo "    \$ source $(basename $0)"
+    echo "or"
+    echo "    \$ . $(basename $0)"
+    echo "--------------------------------------------------"
+    echo "* CHANGES NOT MADE *" | grep --color=tty -E ".*"
+    echo "--------------------------------------------------"
+fi
 
 #------------------------------------------------------------
 # end
