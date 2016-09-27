@@ -6,6 +6,7 @@ from pprint import pprint
 import httplib, urllib2
 import re
 import time
+import traceback
 
 HOST="localhost"
 PORT="8080"
@@ -42,12 +43,12 @@ class MyHTTPSClientAuthHandler(urllib2.HTTPSHandler):
 
 class Client(object):
 
-    def __init__(self, key=KEY, cert=CERT, host=HOST, port=PORT, proto="HTTP"):
+    def __init__(self, key=KEY, cert=CERT, host=HOST, port=PORT, proto="http"):
         self.key = key
         self.cert = cert
         self.host = host
         self.port = port if type(port)==int else int(port)
-        self.proto = proto
+        self.proto = proto.lower()
         self.baseUrl = "%s://%s:%d/nifi-api" % (self.proto, self.host, self.port)
         
         self.cookieJar = cookielib.CookieJar()
@@ -70,9 +71,25 @@ class ProvenanceQuery(object):
     timeFmt = "%m/%d/%Y %H:%M:%S %Z"
 
     def __init__(self, query, debug=False):
-        self.client = Client()
-        self.query = query
+        self.client = Client("http")
         self.opener = self.client.getOpener()
+        try:
+            print "checking HTTP " + self.client.baseUrl + "/provenance"
+            self.request = urllib2.Request(self.client.baseUrl + "/provenance")
+            self.opener.open(self.request)
+            print "checking HTTP ok"           
+        except:
+#            traceback.print_exc()
+            self.client = Client(proto="https")
+            self.opener = self.client.getOpener()
+            try:
+                print "checking HTTPS " + self.client.baseUrl + "/provenance"
+                self.request = urllib2.Request(self.client.baseUrl + "/provenance")
+                self.opener.open(self.request)
+                print "checking HTTPS ok"           
+            except:
+                pass#traceback.print_exc()
+        self.query = query
         self.debug = debug
         self.lastTime = None
         self.fmt = "%-6s %-10s %-27s %-20s %-36s %-10s %-20s %-20s"
@@ -172,6 +189,8 @@ if __name__ == "__main__":
         prov.page()
         prov.close()
 
-        query["provenance"]["request"]["startDate"] = time.strftime(ProvenanceQuery.timeFmt, prov.getLastTime())
+        lastTime = prov.getLastTime()
+        if lastTime:
+            query["provenance"]["request"]["startDate"] = time.strftime(ProvenanceQuery.timeFmt, lastTime())
 
         time.sleep(5)
