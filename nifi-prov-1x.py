@@ -67,6 +67,7 @@ class ProvenanceQuery(object):
 
     opener = None
     debug = False
+    timeFmt = "%m/%d/%Y %H:%M:%S %Z"
 
     def __init__(self, query, debug=False):
         self.client = Client()
@@ -74,7 +75,8 @@ class ProvenanceQuery(object):
         self.opener = self.client.getOpener()
         self.debug = debug
         self.lastTime = None
-        self.fmt = "%-10s %-27s %-20s %-36s %-10s %-20s %-20s"
+        self.fmt = "%-6s %-10s %-27s %-20s %-36s %-10s %-20s %-20s"
+        self.milliPtrn = re.compile("\.[0-9]{3,3}")
         self.lines = 0
         self.pageSize = 20
 
@@ -93,9 +95,12 @@ class ProvenanceQuery(object):
 
     def header(self):
         print ""
-        print self.fmt % ("id", "date/time", "type", "uuid", "size", "component name", "component type")
-        print self.fmt % ("-"*10, "-"*27, "-"*20, "-"*36, "-"*10, "-"*20, "-"*20) 
+        print self.fmt % ("count", "id", "date/time", "type", "uuid", "size", "component name", "component type")
+        print self.fmt % ("-"*6, "-"*10, "-"*27, "-"*20, "-"*36, "-"*10, "-"*20, "-"*20) 
         
+    def apiToTime(self, t):
+        return time.strptime(self.milliPtrn.sub("", t), self.timeFmt)
+
     def page(self):
         url = self.responseData["provenance"]["uri"]
         self.request = urllib2.Request(url=url)
@@ -108,17 +113,18 @@ class ProvenanceQuery(object):
             self.responseData = json.loads(self.responseText)
             done = self.responseData["provenance"]["finished"]
             events = self.responseData["provenance"]["results"]["provenanceEvents"]
-            outEvents = [ev for ev in events if not self.lastTime or ev["eventTime"] > self.lastTime]
+            outEvents = [ev for ev in events if not self.lastTime or 
+                    self.apiToTime(ev["eventTime"]) > self.lastTime]
             if len(outEvents) > 0:
                 for event in outEvents:
                     if self.lines % self.pageSize == 0:
                         self.header()
                     self.lines += 1
-                    print self.fmt % (event["id"], event["eventTime"], event["eventType"],
+                    print self.fmt % (str(self.lines), event["id"], event["eventTime"], event["eventType"],
                                     event["flowFileUuid"], event["fileSize"], event["componentName"],
                                     event["componentName"])
                 times = [self.lastTime, ]
-                times.extend([ev["eventTime"] for ev in outEvents])
+                times.extend([self.apiToTime(ev["eventTime"]) for ev in outEvents])
                 self.lastTime = max(times)
 #            else:
 #                if self.lines % self.pageSize == 0:
@@ -140,14 +146,24 @@ class ProvenanceQuery(object):
 
     def getLastTime(self):
         return self.lastTime
-        
+    
+
+def startOfDay(t):
+    return time.localtime(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0 ,0, 0, 0, t.tm_isdst)))
+
+def endOfDay(t):
+    return time.localtime(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 23, 59, 59, 0, 0, t.tm_isdst)))
 
 if __name__ == "__main__":
 
+    runTime = time.localtime()
+    queryStart = startOfDay(runTime)
+    queryEnd = endOfDay(runTime)
+
     query = { "provenance": { "request": {}}}
     query["provenance"]["request"]["maxResults"] = 100
-    query["provenance"]["request"]["startDate"] = "09/26/2016 00:00:00 EDT"
-    query["provenance"]["request"]["endDate"] = "09/26/2016 23:59:59 EDT"
+    query["provenance"]["request"]["startDate"] = time.strftime(ProvenanceQuery.timeFmt, queryStart)
+    query["provenance"]["request"]["endDate"] = time.strftime(ProvenanceQuery.timeFmt, queryEnd)
     query["provenance"]["request"]["searchTerms"] = {}
 
     prov = ProvenanceQuery(query)
@@ -156,6 +172,6 @@ if __name__ == "__main__":
         prov.page()
         prov.close()
 
-        query["provenance"]["request"]["startDate"] = re.sub("\.[0-9]{3}", "", prov.getLastTime())
+        query["provenance"]["request"]["startDate"] = time.strftime(ProvenanceQuery.timeFmt, prov.getLastTime())
 
         time.sleep(5)
