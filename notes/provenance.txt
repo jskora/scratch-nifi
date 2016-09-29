@@ -1,0 +1,274 @@
+
+package org.apache.nifi.provenance;
+
+                    ProvenanceEventRepository
+                              ^
+                              |
+                    ProvenanceRepository
+                              ^
+                              |
+                    PersistentProvenanceRepository
+
+
+Startup
+====================
+1. nifi.properties - typical configuration is
+    nifi.provenance.repository.implementation=org.apache.nifi.provenance.PersistentProvenanceRepository
+
+2. NifiProperties.java - pulls it in
+    public static final PROVENANCE_REPO_IMPLEMENTATION_CLASS = "nifi.provenance.repository.implementation";
+
+3. FlowController.java
+    public static final String PROVENANCE_REPO_IMPLEMENTATION_CLASS = "nifi.provenance.repository.implementation";
+    public static final String DEFAULT_PROVENANCE_REPO_IMPLEMENTATION = "org.apache.nifi.provenance.VolatileProvenanceRepository";
+
+    private FlowController(...) {
+    ...
+        try {
+            this.provenanceRepository = createProvenanceRepository(nifiProperties);
+            this.provenanceRepository.initialize(createEventReporter(bulletinRepository), authorizer, this);
+        } catch (final Exception e) {
+            throw new RuntimeException("Unable to create Provenance Repository", e);
+        }
+    ...
+    }
+
+    private ProvenanceRepository createProvenanceRepository(final NiFiProperties properties) throws InstantiationException, IllegalAccessException, ClassNotFoundException {
+  **    final String implementationClassName = properties.getProperty(NiFiProperties.PROVENANCE_REPO_IMPLEMENTATION_CLASS, DEFAULT_PROVENANCE_REPO_IMPLEMENTATION);
+        if (implementationClassName == null) {
+            throw new RuntimeException("Cannot create Provenance Repository because the NiFi Properties is missing the following property: "
+                    + NiFiProperties.PROVENANCE_REPO_IMPLEMENTATION_CLASS);
+        }
+    ...
+        try {
+  **        return NarThreadContextClassLoader.createInstance(implementationClassName, ProvenanceRepository.class, properties);
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+4. PersistentProvenanceRepository.java
+    public PersistentProvenanceRepository(final NiFiProperties nifiProperties) throws IOException {
+  **    this(createRepositoryConfiguration(nifiProperties), 10000);
+    }
+
+  **public PersistentProvenanceRepository(final RepositoryConfiguration configuration, final int rolloverCheckMillis) throws IOException {
+        if (configuration.getStorageDirectories().isEmpty()) {
+            throw new IllegalArgumentException("Must specify at least one storage directory");
+        }
+
+        this.configuration = configuration;
+        this.maxAttributeChars = configuration.getMaxAttributeChars();
+
+        for (final File file : configuration.getStorageDirectories()) {
+            final Path storageDirectory = file.toPath();
+            final Path journalDirectory = storageDirectory.resolve("journals");
+
+            if (!Files.exists(journalDirectory)) {
+                Files.createDirectories(journalDirectory);
+            } else if (!Files.isDirectory(journalDirectory)) {
+                throw new IllegalArgumentException("Storage Location " + journalDirectory + " is not a directory");
+            }
+        }
+
+        this.maxPartitionMillis = configuration.getMaxEventFileLife(TimeUnit.MILLISECONDS);
+        this.maxPartitionBytes = configuration.getMaxEventFileCapacity();
+        this.indexConfig = new IndexConfiguration(configuration);
+        this.indexManager = new SimpleIndexManager();
+        this.alwaysSync = configuration.isAlwaysSync();
+        this.rolloverCheckMillis = rolloverCheckMillis;
+
+        scheduledExecService = Executors.newScheduledThreadPool(3, new NamedThreadFactory("Provenance Maintenance Thread"));
+        queryExecService = Executors.newFixedThreadPool(configuration.getQueryThreadPoolSize(), new NamedThreadFactory("Provenance Query Thread"));
+
+        // The number of rollover threads is a little bit arbitrary but comes from the idea that multiple storage directories generally
+        // live on separate physical partitions. As a result, we want to use at least one thread per partition in order to utilize the
+        // disks efficiently. However, the rollover actions can be somewhat CPU intensive, so we double the number of threads in order
+        // to account for that.
+        final int numRolloverThreads = configuration.getStorageDirectories().size() * 2;
+        rolloverExecutor = Executors.newScheduledThreadPool(numRolloverThreads, new NamedThreadFactory("Provenance Repository Rollover Thread"));
+    }
+
+    @Override
+    public void initialize(final EventReporter eventReporter, final Authorizer authorizer, final ProvenanceAuthorizableFactory resourceFactory) throws IOException {
+        writeLock.lock();
+        try {
+            if (initialized.getAndSet(true)) {
+                return;
+            }
+     ...
+  **        recover();
+            if (configuration.isAllowRollover()) {
+                writers = createWriters(configuration, idGenerator.get());
+            }
+
+            if (configuration.isAllowRollover()) {
+                scheduledExecService.scheduleWithFixedDelay(new Runnable() {
+                    @Override public void run() {
+                        // Check if we need to roll over
+                        if (needToRollover()) {
+                            // it appears that we do need to roll over. Obtain write lock so that we can do so, and then
+                            // confirm that we still need to.
+                            writeLock.lock();
+                            try {
+                                logger.debug("Obtained write lock to perform periodic rollover");
+                                if (needToRollover()) {
+                                    try {
+                                        rollover(false);
+                                    } catch (final Exception e) {
+                                        logger.error("Failed to roll over Provenance Event Log due to {}", e.toString());
+                                        logger.error("", e);
+                                        eventReporter.reportEvent(Severity.ERROR, EVENT_CATEGORY, "Failed to roll over Provenance Event Log due to " + e.toString());
+                                    }
+                                }
+                            } finally {
+                                writeLock.unlock();
+                            }
+                        }
+                    }
+                }, rolloverCheckMillis, rolloverCheckMillis, TimeUnit.MILLISECONDS);
+
+                expirationActions.add(new UpdateMinimumEventId(indexConfig));
+                expirationActions.add(new FileRemovalAction());
+
+                scheduledExecService.scheduleWithFixedDelay(new RemoveExpiredQueryResults(), 30L, 3L, TimeUnit.SECONDS);
+                scheduledExecService.scheduleWithFixedDelay(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            purgeOldEvents();
+                        } catch (final Exception e) {
+                            logger.error("Failed to purge old events from Provenance Repo due to {}", e.toString());
+                            if (logger.isDebugEnabled()) {
+                                logger.error("", e);
+                            }
+                            eventReporter.reportEvent(Severity.ERROR, EVENT_CATEGORY, "Failed to purge old events from Provenance Repo due to " + e.toString());
+                        }
+                    }
+                }, PURGE_EVENT_MILLISECONDS, PURGE_EVENT_MILLISECONDS, TimeUnit.MILLISECONDS);
+            }
+
+            firstEventTimestamp = determineFirstEventTimestamp();
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+
+
+public interface ProvenanceEventRepository {
+  void                        close                        () throws IOException;
+  ProvenanceEventBuilder      eventBuilder                 ();
+  ProvenanceEventRecord       getEvent                     (long id) throws IOException;
+  List<ProvenanceEventRecord> getEvents                    (long firstRecordId, final int maxRecords) throws IOException;
+  Long                        getMaxEventId                ();
+  void                        registerEvent                (ProvenanceEventRecord event);
+  void                        registerEvents               (Iterable<ProvenanceEventRecord> events);
+}
+
+public interface ProvenanceRepository extends ProvenanceEventRepository {
+  ProvenanceEventRepository   getProvenanceEventRepository ();
+  void                        initialize                   (EventReporter eventReporter, Authorizer authorizer, ProvenanceAuthorizableFactory resourceFactory) throws IOException;
+
+  ProvenanceEventRecord       getEvent                     (long id, NiFiUser user) throws IOException;
+  List<ProvenanceEventRecord> getEvents                    (long firstRecordId, final int maxRecords, NiFiUser user) throws IOException;
+  List<SearchableField>       getSearchableAttributes      ();
+  List<SearchableField>       getSearchableFields          ();
+  ComputeLineageSubmission    retrieveLineageSubmission    (String lineageIdentifier, NiFiUser user);
+  QuerySubmission             retrieveQuerySubmission      (String queryIdentifier, NiFiUser user);
+  ComputeLineageSubmission    submitLineageComputation     (String flowFileUuid, NiFiUser user);
+  ComputeLineageSubmission    submitLineageComputation     (long eventId, NiFiUser user);
+  ComputeLineageSubmission    submitExpandParents          (long eventId, NiFiUser user);
+  ComputeLineageSubmission    submitExpandChildren         (long eventId, NiFiUser user);
+  QuerySubmission             submitQuery                  (Query query, NiFiUser user);
+}
+
+public class PersistentProvenanceRepository implements ProvenanceRepository { 
+  public  static final   String                      EVENT_CATEGORY               = "Provenance Repository";
+  private static final   String                      FILE_EXTENSION               = ".prov";
+  private static final   String                      TEMP_FILE_SUFFIX             = ".prov.part";
+  private static final   long                        PURGE_EVENT_MILLISECONDS     = 2500L; //Determines the frequency over which the task to delete old events will occur
+  public  static final   int                         SERIALIZATION_VERSION        = 9;
+  public  static final   Pattern                     NUMBER_PATTERN               = Pattern.compile("\\d+");
+  public  static final   Pattern                     INDEX_PATTERN                = Pattern.compile("index-\\d+");
+  public  static final   Pattern                     LOG_FILENAME_PATTERN         = Pattern.compile("(\\d+).*\\.prov");
+  public  static final   int                         MAX_UNDELETED_QUERY_RESULTS  = 10;
+  public  static final   int                         MAX_INDEXING_FAILURE_COUNT   = 5; // how many indexing failures we will tolerate before skipping indexing for a prov file
+  public  static final   int                         MAX_JOURNAL_ROLLOVER_RETRIES = 5;
+
+  public                 PersistentProvenanceRepository () {
+  public                 PersistentProvenanceRepository (final NiFiProperties nifiProperties) throws IOException {
+  public                 PersistentProvenanceRepository (final RepositoryConfiguration configuration, final int rolloverCheckMillis) throws IOException {
+
+@Override
+@ public    synchronized void                        close                               () throws IOException {
+@ public       StandardProvenanceEventRecord.Builder eventBuilder                        () {
+@ public                 ProvenanceEventRecord       getEvent                            (final long id) throws IOException {
+@ public                 ProvenanceEventRecord       getEvent                            (final long id, final NiFiUser user) throws IOException {
+@ public                 List<ProvenanceEventRecord> getEvents                           (final long firstRecordId, final int maxRecords) throws IOException {
+@ public                 List<ProvenanceEventRecord> getEvents                           (final long firstRecordId, final int maxRecords, final NiFiUser user) throws IOException {
+@ public                 Long                        getMaxEventId                       () {
+@ public                 ProvenanceEventRepository   getProvenanceEventRepository        () {
+@ public                 List<SearchableField>       getSearchableAttributes             () {
+@ public                 List<SearchableField>       getSearchableFields                 () {
+@ public                 void                        initialize                          (final EventReporter eventReporter, final Authorizer authorizer, final ProvenanceAuthorizableFactory resourceFactory) throws IOException {
+@ public                 void                        registerEvent                       (final ProvenanceEventRecord event) {
+@ public                 void                        registerEvents                      (final Iterable<ProvenanceEventRecord> events) {
+@ public                 AsyncLineageSubmission      retrieveLineageSubmission           (final String lineageIdentifier, final NiFiUser user) {
+@ public                 QuerySubmission             retrieveQuerySubmission             (final String queryIdentifier, final NiFiUser user) {
+@ public                 AsyncLineageSubmission      submitExpandChildren                (final long eventId, final NiFiUser user) {
+@ public                 AsyncLineageSubmission      submitExpandParents                 (final long eventId, final NiFiUser user) {
+@ public                 ComputeLineageSubmission    submitLineageComputation            (final long eventId, final NiFiUser user) {
+@ public                 AsyncLineageSubmission      submitLineageComputation            (final String flowFileUuid, final NiFiUser user) {
+@ public                 QuerySubmission             submitQuery                         (final Query query, final NiFiUser user) {
+
+  protected              void                        authorize                           (final ProvenanceEventRecord event, final NiFiUser user) {
+                         Lineage                     computeLineage                      (final String flowFileUuid, final NiFiUser user) throws IOException {
+  private                Lineage                     computeLineage                      (final Collection<String> flowFileUuids, final NiFiUser user, final LineageComputationType computationType, final Long eventId, final Long startTimestamp,
+  protected              IndexingAction              createIndexingAction                () {
+  private   static       RepositoryConfiguration     createRepositoryConfiguration       (final NiFiProperties nifiProperties) throws IOException {
+  protected              RecordWriter[]              createWriters                       (final RepositoryConfiguration config, final long initialRecordId) throws IOException {
+  private                void                        deleteDirectory                     (final File dir) {
+  private                long                        determineFirstEventTimestamp        () {
+  private                List<ProvenanceEventRecord> filterUnauthorizedEvents            (final List<ProvenanceEventRecord> events, final NiFiUser user) {
+  protected              List<File>                  filterUnavailableFiles              (final List<File> journalFiles) {
+  private                List<File>                  getAllIndexDirectories              () {
+  public                 Collection<Path>            getAllLogFiles                      () {
+  public                 RepositoryConfiguration     getConfiguration                    () {
+  private                long                        getFirstEventId                     (final File logFile) {
+  protected              IndexManager                getIndexManager                     () {
+  private                long                        getIndexTimestamp                   (final File indexDirectory) {
+  protected              int                         getJournalCount                     () {
+  private                List<File>                  getLogFiles                         () {
+  public                 int                         getMaxAttributeCharacters           () {
+            static       File                        getMergeFile                        (final List<File> journalFiles, final File storageDir) {
+  private                List<Path>                  getPathsForId                       (final long id) {
+  protected              long                        getRolloverRetryMillis              () {
+  public                 long                        getSize                             (final List<File> logFiles, final long timeCutoff) {
+  private                List<File>                  getSortedLogFiles                   () {
+  public                 boolean                     isAuthorized                        (final ProvenanceEventRecord event, final NiFiUser user) {
+  public                 boolean                     isShutdownComplete                  () {
+                         File                        mergeJournals                       (final List<File> journalFiles, final File suggestedMergeFile, final EventReporter eventReporter) throws IOException {
+  private                boolean                     needToRollover                      () {
+  private                void                        persistRecord                       (final Iterable<ProvenanceEventRecord> records) {
+  private                void                        purgeExpiredIndexes                 () throws IOException {
+                         QueryResult                 queryEvents                         (final Query query, final NiFiUser user) throws IOException {
+                     Iterator<ProvenanceEventRecord> queryLucene                         (final org.apache.lucene.search.Query luceneQuery) throws IOException {
+            synchronized void                        purgeOldEvents                      () throws IOException {
+  protected              Set<File>                   recoverJournalFiles                 () throws IOException {
+  private                Set<ProvenanceEventRecord>  replaceUnauthorizedWithPlaceholders (final Set<ProvenanceEventRecord> events, final NiFiUser user) {
+  private                void                        recover                             () throws IOException {
+  private                void                        rollover                            (final boolean force) throws IOException {
+                         void                        rolloverWithLock                    (final boolean force) throws IOException {
+  private                AsyncLineageSubmission      submitLineageComputation            (final Collection<String> flowFileUuids, final NiFiUser user, final LineageComputationType computationType,
+  public                 void                        waitForRollover                     () {
+  private              StandardProvenanceEventRecord truncateAttributes                  (final StandardProvenanceEventRecord original) {
+  private                Map<String, String>         truncateAttributes                  (final Map<String, String> original) {
+
+  private        class ComputeLineageRunnable    implements Runnable {
+  private        class GetMostRecentRunnable     implements Runnable {
+  private static class NamedThreadFactory        implements ThreadFactory {
+  private static class PathMapComparator implements Comparator<Long> {
+  private        class QueryRunnable             implements Runnable {
+  private        class RemoveExpiredQueryResults implements Runnable {
+}
