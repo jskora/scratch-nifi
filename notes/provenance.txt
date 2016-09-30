@@ -1,13 +1,14 @@
 
 package org.apache.nifi.provenance;
 
+PersistentProvenanceRepository
+    |
+    | implements
+    v
+    ProvenanceRepository
+        |
                     ProvenanceEventRepository
-                              ^
-                              |
-                    ProvenanceRepository
-                              ^
-                              |
-                    PersistentProvenanceRepository
+
 
 
 Startup
@@ -19,14 +20,18 @@ Startup
     public static final PROVENANCE_REPO_IMPLEMENTATION_CLASS = "nifi.provenance.repository.implementation";
 
 3. FlowController.java
+    - FlowController() constructor calls createProvenanceRepository(nifiProperties)
+    - createProvenanceRepository() calls NarThreadContextClassLoader.createInstance(implementationClassName, ProvenanceRepository.class, properties)
+
     public static final String PROVENANCE_REPO_IMPLEMENTATION_CLASS = "nifi.provenance.repository.implementation";
     public static final String DEFAULT_PROVENANCE_REPO_IMPLEMENTATION = "org.apache.nifi.provenance.VolatileProvenanceRepository";
 
     private FlowController(...) {
     ...
         try {
-            this.provenanceRepository = createProvenanceRepository(nifiProperties);
-            this.provenanceRepository.initialize(createEventReporter(bulletinRepository), authorizer, this);
+**          this.provenanceRepository = createProvenanceRepository(nifiProperties);
+            this.provenanceRepository.initialize(createEventReporter(bulletinRepository),
+                                                 authorizer, this);
         } catch (final Exception e) {
             throw new RuntimeException("Unable to create Provenance Repository", e);
         }
@@ -34,14 +39,14 @@ Startup
     }
 
     private ProvenanceRepository createProvenanceRepository(final NiFiProperties properties) throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-  **    final String implementationClassName = properties.getProperty(NiFiProperties.PROVENANCE_REPO_IMPLEMENTATION_CLASS, DEFAULT_PROVENANCE_REPO_IMPLEMENTATION);
+**      final String implementationClassName = properties.getProperty(NiFiProperties.PROVENANCE_REPO_IMPLEMENTATION_CLASS, DEFAULT_PROVENANCE_REPO_IMPLEMENTATION);
         if (implementationClassName == null) {
             throw new RuntimeException("Cannot create Provenance Repository because the NiFi Properties is missing the following property: "
                     + NiFiProperties.PROVENANCE_REPO_IMPLEMENTATION_CLASS);
         }
     ...
         try {
-  **        return NarThreadContextClassLoader.createInstance(implementationClassName, ProvenanceRepository.class, properties);
+**          return NarThreadContextClassLoader.createInstance(implementationClassName, ProvenanceRepository.class, properties);
         } catch (final Exception e) {
             throw new RuntimeException(e);
         }
@@ -49,10 +54,10 @@ Startup
 
 4. PersistentProvenanceRepository.java
     public PersistentProvenanceRepository(final NiFiProperties nifiProperties) throws IOException {
-  **    this(createRepositoryConfiguration(nifiProperties), 10000);
+**      this(createRepositoryConfiguration(nifiProperties), 10000);
     }
 
-  **public PersistentProvenanceRepository(final RepositoryConfiguration configuration, final int rolloverCheckMillis) throws IOException {
+**  public PersistentProvenanceRepository(final RepositoryConfiguration configuration, final int rolloverCheckMillis) throws IOException {
         if (configuration.getStorageDirectories().isEmpty()) {
             throw new IllegalArgumentException("Must specify at least one storage directory");
         }
@@ -154,7 +159,7 @@ Startup
         }
     }
 
-
+===========================================================================
 
 public interface ProvenanceEventRepository {
   void                        close                        () throws IOException;
