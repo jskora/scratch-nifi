@@ -1,14 +1,49 @@
+Package: org.apache.nifi.provenance
 
-package org.apache.nifi.provenance;
+Reference: https://cwiki.apache.org/confluence/display/NIFI/Persistent+Provenance+Repository+Design
 
-PersistentProvenanceRepository
-    |
+
+Classes
+=======
+
+    PersistentProvenanceRepository
     | implements
-    v
-    ProvenanceRepository
+    |
+    +-> ProvenanceRepository
+        | extends
         |
-                    ProvenanceEventRepository
+        +-> ProvenanceEventRepository
 
+
+Storage
+=======
+ + Containers map to disk partitions and are used in a round-robin rotation
+ + Containers are split into multiple "journals" for multi-threaded serialization and writing
+
+
+Timing
+======
+ + rollover happens every 30 seconds (configurable)
+   + new journals created and used by ongoing processing
+   + prior journals are merged into one "Provenance Event Log File"
+     + data is compressed in 1MB blocks and a "compression block index"
+     + .toc file is written mapping compression block index to compression block offset
+     + event pointer is stored with event log file, event ID, and compression block index
+     + data is written to disk
+     + indexing includes relevant fields and the event pointer
+     + each record is added to the indexing queue
+   + once "Provenance Event Log File" is written prior journals are deleted
+   + indexing queue is processed
+     + indexes are sharded into 500 MB sets (configurable) and striped across containers
+     + indexes store 32-bit integers limiting each to ~2 billion entries
+     + indexes are stored in directory named with timestamp of index creation
+
+
+Threads
+=======
+ + "Provenance Maintenance Thread"
+ + "Provenance Query Thread"
+ + "Provenance Repository Rollover Thread"
 
 
 Startup
@@ -20,37 +55,78 @@ Startup
     public static final PROVENANCE_REPO_IMPLEMENTATION_CLASS = "nifi.provenance.repository.implementation";
 
 3. FlowController.java
-    - FlowController() constructor calls createProvenanceRepository(nifiProperties)
-    - createProvenanceRepository() calls NarThreadContextClassLoader.createInstance(implementationClassName, ProvenanceRepository.class, properties)
+  + FlowController
+        public static final String PROVENANCE_REPO_IMPLEMENTATION_CLASS =
+                "nifi.provenance.repository.implementation";
+        public static final String DEFAULT_PROVENANCE_REPO_IMPLEMENTATION =
+                "org.apache.nifi.provenance.VolatileProvenanceRepository";
 
-    public static final String PROVENANCE_REPO_IMPLEMENTATION_CLASS = "nifi.provenance.repository.implementation";
-    public static final String DEFAULT_PROVENANCE_REPO_IMPLEMENTATION = "org.apache.nifi.provenance.VolatileProvenanceRepository";
+  + FlowController(..., nifiProperties, ...)
+>1      this.provenanceRepository = createProvenanceRepository(nifiProperties);
+        this.provenanceRepository.initialize(createEventReporter(bulletinRepository),
+                                             authorizer, this);
+        . . .
+        final ProcessContextFactory contextFactory = new ProcessContextFactory(
+                contentRepository, flowFileRepository, flowFileEventRepository,
+                counterRepositoryRef.get(), provenanceRepository);
+        processScheduler.setSchedulingAgent(SchedulingStrategy.EVENT_DRIVEN,
+                                            new EventDrivenSchedulingAgent(
+                                                    eventDrivenEngineRef.get(), this,
+                                                    stateManagerProvider, eventDrivenWorkerQueue,
+                                                    contextFactory, maxEventDrivenThreads.get(),
+                                                    encryptor, this.variableRegistry));
 
-    private FlowController(...) {
-    ...
-        try {
-**          this.provenanceRepository = createProvenanceRepository(nifiProperties);
-            this.provenanceRepository.initialize(createEventReporter(bulletinRepository),
-                                                 authorizer, this);
-        } catch (final Exception e) {
-            throw new RuntimeException("Unable to create Provenance Repository", e);
-        }
-    ...
-    }
+1>++ FlowController.createProvenanceRepository(nifiProperties)
+        final String implementationClassName = properties.getProperty(
+                NiFiProperties.PROVENANCE_REPO_IMPLEMENTATION_CLASS,
+                DEFAULT_PROVENANCE_REPO_IMPLEMENTATION);
+>2      return NarThreadContextClassLoader.createInstance(
+                implementationClassName, ProvenanceRepository.class, properties);
 
-    private ProvenanceRepository createProvenanceRepository(final NiFiProperties properties) throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-**      final String implementationClassName = properties.getProperty(NiFiProperties.PROVENANCE_REPO_IMPLEMENTATION_CLASS, DEFAULT_PROVENANCE_REPO_IMPLEMENTATION);
-        if (implementationClassName == null) {
-            throw new RuntimeException("Cannot create Provenance Repository because the NiFi Properties is missing the following property: "
-                    + NiFiProperties.PROVENANCE_REPO_IMPLEMENTATION_CLASS);
-        }
-    ...
-        try {
-**          return NarThreadContextClassLoader.createInstance(implementationClassName, ProvenanceRepository.class, properties);
-        } catch (final Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
+2>+++ PersistentProvenanceRepository(final NiFiProperties nifiProperties)
+>3      this(createRepositoryConfiguration(nifiProperties), 10000);
+>3++++ PersistentProvenanceRepository(final RepositoryConfiguration configuration,
+                final int rolloverCheckMillis)
+
+  + FlowController(..., nifiProperties, ...)
+
+
+
+
+
+
+
+  + FlowController
+        public static final String PROVENANCE_REPO_IMPLEMENTATION_CLASS =
+                "nifi.provenance.repository.implementation";
+        public static final String DEFAULT_PROVENANCE_REPO_IMPLEMENTATION =
+                "org.apache.nifi.provenance.VolatileProvenanceRepository";
+  + FlowController(..., nifiProperties, ...)
+        this.provenanceRepository = createProvenanceRepository(nifiProperties);
+  ++ FlowController.createProvenanceRepository(nifiProperties)
+        final String implementationClassName = properties.getProperty(
+                NiFiProperties.PROVENANCE_REPO_IMPLEMENTATION_CLASS,
+                DEFAULT_PROVENANCE_REPO_IMPLEMENTATION);
+        return NarThreadContextClassLoader.createInstance(
+                implementationClassName, ProvenanceRepository.class, properties);
+  +++ PersistentProvenanceRepository(final NiFiProperties nifiProperties)
+        this(createRepositoryConfiguration(nifiProperties), 10000);
+  ++++ PersistentProvenanceRepository(final RepositoryConfiguration configuration,
+                final int rolloverCheckMillis)
+  + FlowController(..., nifiProperties, ...)
+        this.provenanceRepository.initialize(createEventReporter(bulletinRepository),
+                                             authorizer, this);
+        final ProcessContextFactory contextFactory = new ProcessContextFactory(
+                contentRepository, flowFileRepository, flowFileEventRepository,
+                counterRepositoryRef.get(), provenanceRepository);
+        processScheduler.setSchedulingAgent(SchedulingStrategy.EVENT_DRIVEN,
+                                            new EventDrivenSchedulingAgent(
+                                                    eventDrivenEngineRef.get(), this,
+                                                    stateManagerProvider, eventDrivenWorkerQueue,
+                                                    contextFactory, maxEventDrivenThreads.get(),
+                                                    encryptor, this.variableRegistry));
+
+
 
 4. PersistentProvenanceRepository.java
     public PersistentProvenanceRepository(final NiFiProperties nifiProperties) throws IOException {
