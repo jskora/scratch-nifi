@@ -5,24 +5,23 @@ Reference: https://cwiki.apache.org/confluence/display/NIFI/Persistent+Provenanc
 
 Classes
 =======
-
-    PersistentProvenanceRepository
-    | implements
-    |
-    +-> ProvenanceRepository
+    1.x branch                               0.x branch
+    ----------                               ----------
+    PersistentProvenanceRepository           PersistentProvenanceRepository
+    | implements                             | implements
+    |                                        |
+    +-> ProvenanceRepository                 +-> ProvenanceEventRepository
         | extends
         |
         +-> ProvenanceEventRepository
 
 
-Storage
-=======
- + Containers map to disk partitions and are used in a round-robin rotation
- + Containers are split into multiple "journals" for multi-threaded serialization and writing
+Storage and processing
+======================
+ + containers map to disk partitions
+ + containers are used in a round-robin rotation
+ + each container is split into multiple "journals" for multi-threaded serialization and writing
 
-
-Timing
-======
  + rollover happens every 30 seconds (configurable)
    + new journals created and used by ongoing processing
    + prior journals are merged into one "Provenance Event Log File"
@@ -45,6 +44,10 @@ Threads
  + "Provenance Query Thread"
  + "Provenance Repository Rollover Thread"
 
+
+Methods
+=======
+ + NiFiProperties.getProvenanceRepositoryPaths() - map of repository names to paths
 
 Startup
 ====================
