@@ -16,19 +16,22 @@ while True:
     print fmts % (nameWidth, "directory", "curr size", " ", "avg size", " ", "max size", " ")
     n += 1
     for folder in folders:
-        bytes = sum( os.path.getsize(os.path.join(dirpath, filename)) 
-                        for dirpath, dirnames, filenames in os.walk( folder ) 
-                        for filename in filenames )
-        oldSize = currSize[folder]
-        oldAvg = 1 if n == 1 else totalSize[folder]/(n-1)
-        oldMax = maxSize[folder]
-        currSize[folder] = bytes
-        totalSize[folder] += bytes
-        maxSize[folder] = max(maxSize[folder], bytes)
-        avg = totalSize[folder] / n
-        print fmts % (nameWidth, folder, 
-                        "{:,}".format(bytes), "+" if bytes > oldSize else "-" if bytes < oldSize else " ",  
-                        "{:,}".format(avg), "+" if avg > oldAvg else "-" if avg < oldAvg else " ", 
-                        "{:,}".format(maxSize[folder]), "+" if maxSize[folder] > oldMax else " ")
+        try:
+            bytes = sum( os.path.getsize(os.path.join(dirpath, filename))
+                            for dirpath, dirnames, filenames in os.walk( folder )
+                            for filename in filenames )
+            oldSize = currSize[folder]
+            oldAvg = 1 if n == 1 else totalSize[folder]/(n-1)
+            oldMax = maxSize[folder]
+            currSize[folder] = bytes
+            totalSize[folder] += bytes
+            maxSize[folder] = max(maxSize[folder], bytes)
+            avg = totalSize[folder] / n
+            print fmts % (nameWidth, folder,
+                            "{:,}".format(bytes), "+" if bytes > oldSize else "-" if bytes < oldSize else " ",
+                            "{:,}".format(avg), "+" if avg > oldAvg else "-" if avg < oldAvg else " ",
+                            "{:,}".format(maxSize[folder]), "+" if maxSize[folder] > oldMax else " ")
+        except:
+            pass
     print ""
     time.sleep(2)
