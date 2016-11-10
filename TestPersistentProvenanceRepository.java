@@ -73,7 +73,6 @@ import org.apache.nifi.provenance.serialization.RecordReaders;
 import org.apache.nifi.provenance.serialization.RecordWriter;
 import org.apache.nifi.provenance.serialization.RecordWriters;
 import org.apache.nifi.reporting.Severity;
-import org.apache.nifi.stream.io.ByteCountingInputStream;
 import org.apache.nifi.stream.io.DataOutputStream;
 import org.apache.nifi.util.NiFiProperties;
 import org.apache.nifi.util.file.FileUtils;
@@ -1660,10 +1659,6 @@ public class TestPersistentProvenanceRepository {
         repo.registerEvent(builder.build());
     }
 
-
-    // TODO: test EOF on merge
-    // TODO: Test journal with no records
-
     @Test
     public void testTextualQuery() throws InterruptedException, IOException, ParseException {
         final RepositoryConfiguration config = createConfiguration();
@@ -1732,6 +1727,28 @@ public class TestPersistentProvenanceRepository {
         }
     }
 
+    private long checkJournalRecords(final File storageDir, final Boolean exact) throws IOException {
+        File[] storagefiles = storageDir.listFiles();
+        long counter = 0;
+        assertNotNull(storagefiles);
+        for (final File file : storagefiles) {
+            if (file.isFile()) {
+                try (RecordReader reader = RecordReaders.newRecordReader(file, null, 2048)) {
+                    ProvenanceEventRecord r;
+                    ProvenanceEventRecord last = null;
+                    while ((r = reader.nextRecord()) != null) {
+                        if (exact) {
+                            assertTrue(counter++ == r.getEventId());
+                        } else {
+                            assertTrue(counter++ <= r.getEventId());
+                        }
+                    }
+                }
+            }
+        }
+        return counter;
+    }
+
     @Test
     public void testMergeJournals() throws IOException, InterruptedException {
         final RepositoryConfiguration config = createConfiguration();
@@ -1765,21 +1782,7 @@ public class TestPersistentProvenanceRepository {
         repo.waitForRollover();
 
         final File storageDir = config.getStorageDirectories().get(0);
-        long counter = 0;
-        for (final File file : storageDir.listFiles()) {
-            if (file.isFile()) {
-
-                try (RecordReader reader = RecordReaders.newRecordReader(file, null, 2048)) {
-                    ProvenanceEventRecord r = null;
-
-                    while ((r = reader.nextRecord()) != null) {
-                        assertEquals(counter++, r.getEventId());
-                    }
-                }
-            }
-        }
-
-        assertEquals(10000, counter);
+        assertEquals(10000, checkJournalRecords(storageDir, true));
     }
 
     private void corruptJournalFile(final File journalFile, final int position,
@@ -1841,33 +1844,15 @@ public class TestPersistentProvenanceRepository {
 
         testRepo.recoverJournalFiles();
 
-        assertEquals("mergeJournals() should report a skipped record", 1, reportedEvents.size());
-        assertEquals("mergeJournals() should report a skipped record",
+        assertEquals("mergeJournals() should report a skipped journal", 1, reportedEvents.size());
+        assertEquals("mergeJournals() should report a skipped journal",
                 "Failed to read Provenance Event Record from Journal due to java.lang.IllegalArgumentException: "
                         + "No enum constant org.apache.nifi.provenance.ProvenanceEventType.BADTYPE; it's possible "
                         + "that the record wasn't completely written to the file. This journal will be skipped.",
                 reportedEvents.get(reportedEvents.size() - 1).getMessage());
 
         final File storageDir = config.getStorageDirectories().get(0);
-        long counter = 0;
-        assertNotNull(storageDir);
-        File[] storagefiles = storageDir.listFiles();
-        assertNotNull(storagefiles);
-        for (final File file : storagefiles) {
-            if (file.isFile()) {
-
-                try (RecordReader reader = RecordReaders.newRecordReader(file, null, 2048)) {
-                    ProvenanceEventRecord r;
-                    ProvenanceEventRecord last = null;
-
-                    while ((r = reader.nextRecord()) != null) {
-                        assertTrue(counter++ <= r.getEventId());
-                    }
-                }
-            }
-        }
-
-        assertTrue(counter < 10000);
+        assertTrue(checkJournalRecords(storageDir, false) < 10000);
     }
 
     @Test
@@ -1912,8 +1897,8 @@ public class TestPersistentProvenanceRepository {
 
         testRepo.recoverJournalFiles();
 
-        assertEquals("mergeJournals should report a skipped record", 1, reportedEvents.size());
-        assertEquals("mergeJournals should report a skipped record",
+        assertEquals("mergeJournals should report a skipped journal", 1, reportedEvents.size());
+        assertEquals("mergeJournals should report a skipped journal",
                 "Failed to read Provenance Event Record from Journal due to java.lang.IllegalArgumentException: "
                         + "No enum constant org.apache.nifi.provenance.ProvenanceEventType.BADTYPE; it's possible "
                         + "that the record wasn't completely written to the file. The remainder of this journal will "
@@ -1921,25 +1906,53 @@ public class TestPersistentProvenanceRepository {
                 reportedEvents.get(reportedEvents.size() - 1).getMessage());
 
         final File storageDir = config.getStorageDirectories().get(0);
-        long counter = 0;
-        assertNotNull(storageDir);
-        File[] storagefiles = storageDir.listFiles();
-        assertNotNull(storagefiles);
-        for (final File file : storagefiles) {
-            if (file.isFile()) {
+        assertTrue(checkJournalRecords(storageDir, false) < 10000);
+    }
 
-                try (RecordReader reader = RecordReaders.newRecordReader(file, null, 2048)) {
-                    ProvenanceEventRecord r;
-                    ProvenanceEventRecord last = null;
+    @Test
+    public void testMergeJournalsEmptyJournal() throws IOException, InterruptedException {
+        final RepositoryConfiguration config = createConfiguration();
+        config.setMaxEventFileLife(3, TimeUnit.SECONDS);
+        TestablePersistentProvenanceRepository testRepo = new TestablePersistentProvenanceRepository(config, DEFAULT_ROLLOVER_MILLIS);
+        testRepo.initialize(getEventReporter(), null, null);
 
-                    while ((r = reader.nextRecord()) != null) {
-                        assertTrue(counter++ <= r.getEventId());
-                    }
+        final Map<String, String> attributes = new HashMap<>();
+
+        final ProvenanceEventBuilder builder = new StandardProvenanceEventRecord.Builder();
+        builder.setEventTime(System.currentTimeMillis());
+        builder.setEventType(ProvenanceEventType.RECEIVE);
+        builder.setTransitUri("nifi://unit-test");
+        attributes.put("uuid", "12345678-0000-0000-0000-012345678912");
+        builder.fromFlowFile(createFlowFile(3L, 3000L, attributes));
+        builder.setComponentId("1234");
+        builder.setComponentType("dummy processor");
+
+        final ProvenanceEventRecord record = builder.build();
+
+        final ExecutorService exec = Executors.newFixedThreadPool(10);
+        final List<Future> futures = new ArrayList<>();
+        for (int i = 0; i < config.getJournalCount() - 1; i++) {
+            futures.add(exec.submit(new Runnable() {
+                @Override
+                public void run() {
+                    testRepo.registerEvent(record);
                 }
+            }));
+        }
+
+        // wait for writers to finish and then corrupt the first record of the first journal file
+        for (Future future : futures) {
+            while (!future.isDone()) {
+                Thread.sleep(10);
             }
         }
 
-        assertTrue(counter < 10000);
+        testRepo.recoverJournalFiles();
+
+        assertEquals("mergeJournals() should not error on empty journal", 0, reportedEvents.size());
+
+        final File storageDir = config.getStorageDirectories().get(0);
+        assertEquals(config.getJournalCount() - 1, checkJournalRecords(storageDir, true));
     }
 
     @Test

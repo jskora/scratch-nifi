@@ -1658,6 +1658,7 @@ public class PersistentProvenanceRepository implements ProvenanceRepository {
                 try {
                     record = reader.nextRecord();
                 } catch (final EOFException eof) {
+                    // record will be null and reader can no longer be used
                 } catch (final Exception e) {
                     logger.warn("Failed to generate Provenance Event Record from Journal due to " + e + "; it's "
                             + "possible that the record wasn't completely written to the file. This journal will be "
@@ -1806,6 +1807,7 @@ public class PersistentProvenanceRepository implements ProvenanceRepository {
                             try {
                                 nextRecord = reader.nextRecord();
                             } catch (final EOFException eof) {
+                                // record will be null and reader can no longer be used
                             } catch (final Exception e) {
                                 logger.warn("Failed to generate Provenance Event Record from Journal due to " + e
                                         + "; it's possible that the record wasn't completely written to the file. "
