@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/scratch-nifi.iml" filepath="$PROJECT_DIR$/.idea/scratch-nifi.iml" />
+      <module fileurl="file://$PROJECT_DIR$/writer-benchmark/writer-benchmark.iml" filepath="$PROJECT_DIR$/writer-benchmark/writer-benchmark.iml" />
     </modules>
   </component>
 </project>
