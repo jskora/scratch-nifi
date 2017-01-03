@@ -16,18 +16,8 @@
 # stateOrProvinceName and organizationName fields optional.
 #------------------------------------------------------------
 
-export ROOT_CA=test-ca
-export INT_CA=intermediate.${ROOT_CA}
-
-export OCSP_ID=ocsp.${INT_CA}
-
-export ROOT_PWD=testca
-export INT_PWD=testintermediate
-export OCSP_PWD=testocsp
-
-export ROOT_DIR="$( cd "${1:-.}" && pwd )"
-read -p "destination folder is ${ROOT_DIR}, press <enter> to proceed" DUMP
-export INT_DIR=${ROOT_DIR}/intermediate
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source ${DIR}/make_test_ca_cfg.sh
 
 #------------------------------------------------------------
 # setup folders
@@ -203,16 +193,18 @@ EOF
 echo -e "\nCreating ${INT_DIR}/openssl.conf"
 
 cp ${ROOT_DIR}/openssl.conf ${INT_DIR}/openssl.conf
-#sed -i "s#^dir               = ${ROOT_DIR}#dir               = ${INT_DIR}#" ${INT_DIR}/openssl.conf
-#sed -i "s#^private_key       = ${ROOT_DIR}/private/${ROOT_CA}.key.pem#private_key       = ${INT_DIR}/private/${INT_CA}.key.pem#" ${INT_DIR}/openssl.conf
-#sed -i "s#^certificate       = ${ROOT_DIR}/certs/${ROOT_CA}.cert.pem#certificate       = ${INT_DIR}/certs/${INT_CA}.cert.pem#" ${INT_DIR}/openssl.conf
-#sed -i "s#^crl               = ${ROOT_DIR}/crl/${ROOT_CA}.crl.pem#crl               = ${INT_DIR}/crl/${INT_CA}.crl.pem#" ${INT_DIR}/openssl.conf
-#sed -i "s#^policy            = policy_strict#policy            = policy_loose#" ${INT_DIR}/openssl.conf
-if [ "$(uname -s)" == "Linux" ]; then
-    BKP_EXT=
-else
-    BKP_EXT='""'
-fi
+case $OSTYPE in
+    linux*)  
+        BKP_EXT=
+        ;;
+    darwin*)
+        BKP_EXT='""'
+        ;;
+    *)
+        echo "Uknown OSTYPE=$OSTYPE"
+        exit
+        ;;
+esac
 sed -i ${BKP_EXT} "s#${ROOT_DIR}#${INT_DIR}#g" ${INT_DIR}/openssl.conf
 sed -i ${BKP_EXT} "s#${ROOT_CA}#${INT_CA}#g" ${INT_DIR}/openssl.conf
 sed -i ${BKP_EXT} "s#= policy_strict#= policy_loose#" ${INT_DIR}/openssl.conf
@@ -291,92 +283,6 @@ chmod 0400 ${INT_DIR}/certs/${INT_CA}-chain.cert.pem
 read -p "intermediate cert done - press <enter> to continue" DUMP
 
 #------------------------------------------------------------
-# create servers and clients
-#------------------------------------------------------------
-
-for SERVER in server1 server2 server3; do
-
-    echo -e "\nCreating ${SERVER} key"
-    export SUB_PWD=${SERVER}
-    openssl genrsa -aes256 \
-        -out ${INT_DIR}/private/${SERVER}.key.pem \
-        -passout env:SUB_PWD 2048
-    chmod 0400 ${INT_DIR}/private/${SERVER}.key.pem
-    
-    echo -e "\nCreating ${SERVER} signing request"
-    openssl req -config ${INT_DIR}/openssl.conf \
-        -key ${INT_DIR}/private/${SERVER}.key.pem \
-        -passin env:SUB_PWD \
-        -new -sha256 \
-        -out ${INT_DIR}/csr/${SERVER}.csr.pem \
-        -passout env:SUB_PWD \
-        -subj "/C=US/CN=${SERVER}.${INT_CA}"
-    
-    echo -e "\nCreating ${SERVER} certificate"
-    openssl ca -config ${INT_DIR}/openssl.conf \
-        -extensions server_cert \
-        -days 500 \
-        -notext \
-        -md sha256 \
-        -in ${INT_DIR}/csr/${SERVER}.csr.pem \
-        -out ${INT_DIR}/certs/${SERVER}.cert.pem \
-        -passin env:INT_PWD \
-        -batch
-    chmod 0444 ${INT_DIR}/certs/${SERVER}.cert.pem
-
-    echo -e "\nVerifying ${SERVER} certificate"
-    openssl x509 -noout -text \
-        -in ${INT_DIR}/certs/${SERVER}.cert.pem
-
-    echo -e "\nCreating ${SERVER} certificate chain"
-    openssl verify -CAfile ${INT_DIR}/certs/${INT_CA}-chain.cert.pem \
-        ${INT_DIR}/certs/${SERVER}.cert.pem
-
-    read -p "${SERVER} done - press <enter> to continue" DUMP
-done
-
-for CLIENT in client1 client2 client3; do
-
-    echo -e "\nCreating ${CLIENT} key"
-    export SUB_PWD=${CLIENT}
-    openssl genrsa -aes256 \
-        -out ${INT_DIR}/private/${CLIENT}.key.pem \
-        -passout env:SUB_PWD 2048
-    chmod 0400 ${INT_DIR}/private/${CLIENT}.key.pem
-
-    echo -e "\nCreating ${CLIENT} signing request"
-    openssl req -config ${INT_DIR}/openssl.conf \
-        -key ${INT_DIR}/private/${CLIENT}.key.pem \
-        -passin env:SUB_PWD \
-        -new -sha256 \
-        -out ${INT_DIR}/csr/${CLIENT}.csr.pem \
-        -passout env:SUB_PWD \
-        -subj "/C=US/CN=${CLIENT}.${INT_CA}"
-
-    echo -e "\nCreating ${CLIENT} certificate"
-    openssl ca -config ${INT_DIR}/openssl.conf \
-        -extensions usr_cert \
-        -days 500 \
-        -notext \
-        -md sha256 \
-        -in ${INT_DIR}/csr/${CLIENT}.csr.pem \
-        -out ${INT_DIR}/certs/${CLIENT}.cert.pem \
-        -passin env:INT_PWD \
-        -batch
-    chmod 0444 ${INT_DIR}/certs/${CLIENT}.cert.pem
-
-    echo -e "\nVerifying ${CLIENT} certificate"
-    openssl x509 -noout -text \
-        -in ${INT_DIR}/certs/${CLIENT}.cert.pem
-
-    echo -e "\nCreating ${CLIENT} certificate chain"
-    openssl verify -CAfile ${INT_DIR}/certs/${INT_CA}-chain.cert.pem \
-        ${INT_DIR}/certs/${CLIENT}.cert.pem
-
-    read -p "${CLIENT} done - press <enter> to continue" DUMP
-done
-
-#------------------------------------------------------------
 # create ocsp pair
 #------------------------------------------------------------
 
@@ -408,6 +314,94 @@ chmod 0444 ${INT_DIR}/certs/${OCSP_ID}.cert.pem
 
 echo -e "\nVerifying ocsp certificate"
 openssl x509 -noout -text -in ${INT_DIR}/certs/${OCSP_ID}.cert.pem
+
+read -p "ocsp pair done - press <enter> to continue" DUMP
+
+# #------------------------------------------------------------
+# # create servers and clients
+# #------------------------------------------------------------
+# 
+# for SERVER in server1 server2 server3; do
+# 
+#     echo -e "\nCreating ${SERVER} key"
+#     export SUB_PWD=${SERVER}
+#     openssl genrsa -aes256 \
+#         -out ${INT_DIR}/private/${SERVER}.key.pem \
+#         -passout env:SUB_PWD 2048
+#     chmod 0400 ${INT_DIR}/private/${SERVER}.key.pem
+#     
+#     echo -e "\nCreating ${SERVER} signing request"
+#     openssl req -config ${INT_DIR}/openssl.conf \
+#         -key ${INT_DIR}/private/${SERVER}.key.pem \
+#         -passin env:SUB_PWD \
+#         -new -sha256 \
+#         -out ${INT_DIR}/csr/${SERVER}.csr.pem \
+#         -passout env:SUB_PWD \
+#         -subj "/C=US/CN=${SERVER}.${INT_CA}"
+#     
+#     echo -e "\nCreating ${SERVER} certificate"
+#     openssl ca -config ${INT_DIR}/openssl.conf \
+#         -extensions server_cert \
+#         -days 500 \
+#         -notext \
+#         -md sha256 \
+#         -in ${INT_DIR}/csr/${SERVER}.csr.pem \
+#         -out ${INT_DIR}/certs/${SERVER}.cert.pem \
+#         -passin env:INT_PWD \
+#         -batch
+#     chmod 0444 ${INT_DIR}/certs/${SERVER}.cert.pem
+# 
+#     echo -e "\nVerifying ${SERVER} certificate"
+#     openssl x509 -noout -text \
+#         -in ${INT_DIR}/certs/${SERVER}.cert.pem
+# 
+#     echo -e "\nCreating ${SERVER} certificate chain"
+#     openssl verify -CAfile ${INT_DIR}/certs/${INT_CA}-chain.cert.pem \
+#         ${INT_DIR}/certs/${SERVER}.cert.pem
+# 
+#     read -p "${SERVER} done - press <enter> to continue" DUMP
+# done
+# 
+# for CLIENT in client1 client2 client3; do
+# 
+#     echo -e "\nCreating ${CLIENT} key"
+#     export SUB_PWD=${CLIENT}
+#     openssl genrsa -aes256 \
+#         -out ${INT_DIR}/private/${CLIENT}.key.pem \
+#         -passout env:SUB_PWD 2048
+#     chmod 0400 ${INT_DIR}/private/${CLIENT}.key.pem
+# 
+#     echo -e "\nCreating ${CLIENT} signing request"
+#     openssl req -config ${INT_DIR}/openssl.conf \
+#         -key ${INT_DIR}/private/${CLIENT}.key.pem \
+#         -passin env:SUB_PWD \
+#         -new -sha256 \
+#         -out ${INT_DIR}/csr/${CLIENT}.csr.pem \
+#         -passout env:SUB_PWD \
+#         -subj "/C=US/CN=${CLIENT}.${INT_CA}"
+# 
+#     echo -e "\nCreating ${CLIENT} certificate"
+#     openssl ca -config ${INT_DIR}/openssl.conf \
+#         -extensions usr_cert \
+#         -days 500 \
+#         -notext \
+#         -md sha256 \
+#         -in ${INT_DIR}/csr/${CLIENT}.csr.pem \
+#         -out ${INT_DIR}/certs/${CLIENT}.cert.pem \
+#         -passin env:INT_PWD \
+#         -batch
+#     chmod 0444 ${INT_DIR}/certs/${CLIENT}.cert.pem
+# 
+#     echo -e "\nVerifying ${CLIENT} certificate"
+#     openssl x509 -noout -text \
+#         -in ${INT_DIR}/certs/${CLIENT}.cert.pem
+# 
+#     echo -e "\nCreating ${CLIENT} certificate chain"
+#     openssl verify -CAfile ${INT_DIR}/certs/${INT_CA}-chain.cert.pem \
+#         ${INT_DIR}/certs/${CLIENT}.cert.pem
+# 
+#     read -p "${CLIENT} done - press <enter> to continue" DUMP
+# done
 
 #------------------------------------------------------------
 # done
