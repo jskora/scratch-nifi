@@ -7,9 +7,9 @@
 #------------------------------------------------------------
 
 export ROOT_CA=test-ca
-export INT_CA=test-intermediate
+export INT_CA=intermediate.${ROOT_CA}
 
-export OCSP_ID=test-ocsp
+export OCSP_ID=ocsp.${INT_CA}
 
 export ROOT_PWD=testca
 export INT_PWD=testintermediate
@@ -25,10 +25,10 @@ export INT_DIR=${ROOT_DIR}/intermediate
 openssl ocsp -port 127.0.0.1:8888 \
     -text \
     -sha256 \
-    -index intermediate/index.txt \
-    -CA intermediate/certs/ca-chain.cert.pem \
-    -rkey intermediate/private/test-ocsp.key.pem \
-    -rsigner intermediate/certs/test-ocsp.cert.pem
+    -index ${INT_DIR}/index.txt \
+    -CA ${INT_DIR}/certs/${INT_CA}-chain.cert.pem \
+    -rkey ${INT_DIR}/private/${OCSP_ID}.key.pem \
+    -rsigner ${INT_DIR}/certs/${OCSP_ID}.cert.pem
 
 #------------------------------------------------------------
 # end

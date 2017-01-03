@@ -17,16 +17,16 @@
 #------------------------------------------------------------
 
 export ROOT_CA=test-ca
-export INT_CA=test-intermediate
+export INT_CA=intermediate.${ROOT_CA}
 
-export OCSP_ID=test-ocsp
+export OCSP_ID=ocsp.${INT_CA}
 
 export ROOT_PWD=testca
 export INT_PWD=testintermediate
 export OCSP_PWD=testocsp
 
 export ROOT_DIR="$( cd "${1:-.}" && pwd )"
-read -e -p "Destination folder for test CA: " -i "${ROOT_DIR}" REPLY
+read -p "destination folder is ${ROOT_DIR}, press <enter> to proceed" DUMP
 export INT_DIR=${ROOT_DIR}/intermediate
 
 #------------------------------------------------------------
@@ -209,39 +209,44 @@ cp ${ROOT_DIR}/openssl.conf ${INT_DIR}/openssl.conf
 #sed -i "s#^certificate       = ${ROOT_DIR}/certs/${ROOT_CA}.cert.pem#certificate       = ${INT_DIR}/certs/${INT_CA}.cert.pem#" ${INT_DIR}/openssl.conf
 #sed -i "s#^crl               = ${ROOT_DIR}/crl/${ROOT_CA}.crl.pem#crl               = ${INT_DIR}/crl/${INT_CA}.crl.pem#" ${INT_DIR}/openssl.conf
 #sed -i "s#^policy            = policy_strict#policy            = policy_loose#" ${INT_DIR}/openssl.conf
-sed -i "s#${ROOT_DIR}#${INT_DIR}"g ${INT_DIR}/openssl.conf
-sed -i "s#${ROOT_CA}#${INT_CA}"g ${INT_DIR}/openssl.conf
-sed -i "s#= policy_strict#= policy_loose#" ${INT_DIR}/openssl.conf
+sed -i "" "s#${ROOT_DIR}#${INT_DIR}#g" ${INT_DIR}/openssl.conf
+sed -i "" "s#${ROOT_CA}#${INT_CA}#g" ${INT_DIR}/openssl.conf
+sed -i "" "s#= policy_strict#= policy_loose#" ${INT_DIR}/openssl.conf
 
 #------------------------------------------------------------
 # create root ca
 #------------------------------------------------------------
 
 echo -e "\nCreating root key"
-openssl genrsa -aes256 -out private/${ROOT_CA}.key.pem -passout env:ROOT_PWD 4096
+openssl genrsa -aes256 \
+    -out private/${ROOT_CA}.key.pem \
+    -passout env:ROOT_PWD 4096
 chmod 400 private/${ROOT_CA}.key.pem
 
 echo -e "\nCreating root certificate"
-openssl req -config openssl.conf -key private/${ROOT_CA}.key.pem \
-    -new \
-    -x509 \
-    -days 1000 \
-    -sha256 \
+openssl req -config openssl.conf \
+    -key private/${ROOT_CA}.key.pem \
+    -new -x509 -days 1000 -sha256 \
     -extensions v3_ca \
     -out certs/${ROOT_CA}.cert.pem \
-    -passin env:ROOT_PWD -passout env:ROOT_PWD \
-    -subj "/C=US/CN=root.testca"
+    -passin env:ROOT_PWD \
+    -passout env:ROOT_PWD \
+    -subj "/C=US/CN=${ROOT_CA}"
 chmod 444 certs/${ROOT_CA}.cert.pem
 
 echo -e "\nVerifying root certificate"
 openssl x509 -noout -text -in certs/${ROOT_CA}.cert.pem
+
+read -p "press <enter> to continue" DUMP
 
 #------------------------------------------------------------
 # create intermediate ca
 #------------------------------------------------------------
 
 echo -e "\nCreating intermediate key"
-openssl genrsa -aes256 -out ${INT_DIR}/private/${INT_CA}.key.pem -passout env:INT_PWD 4096
+openssl genrsa -aes256 \
+    -out ${INT_DIR}/private/${INT_CA}.key.pem \
+    -passout env:INT_PWD 4096
 chmod 0400 ${INT_DIR}/private/${INT_CA}.key.pem
 
 echo -e "\nCreating intermediate signing request"
@@ -252,7 +257,7 @@ openssl req -config ${INT_DIR}/openssl.conf \
     -out ${INT_DIR}/csr/${INT_CA}.csr.pem \
     -passin env:INT_PWD \
     -passout env:INT_PWD \
-    -subj "/C=US/CN=intermediate.testca"
+    -subj "/C=US/CN=${INT_CA}"
 
 echo -e "\nCreating intermediate certificate"
 openssl ca -config openssl.conf \
@@ -267,14 +272,17 @@ openssl ca -config openssl.conf \
 chmod 0444 ${INT_DIR}/certs/${INT_CA}.cert.pem
 
 echo -e "\nVerifying intermediate certificate"
-openssl x509 -noout -text -in ${INT_DIR}/certs/${INT_CA}.cert.pem
+openssl x509 -noout -text \
+    -in ${INT_DIR}/certs/${INT_CA}.cert.pem
 openssl verify -CAfile certs/${ROOT_CA}.cert.pem \
     ${INT_DIR}/certs/${INT_CA}.cert.pem
 
 echo -e "\nCreating intermediate certificate chain"
 cat ${INT_DIR}/certs/${INT_CA}.cert.pem \
-    certs/${ROOT_CA}.cert.pem > ${INT_DIR}/certs/ca-chain.cert.pem
-chmod 0400 ${INT_DIR}/certs/ca-chain.cert.pem
+    certs/${ROOT_CA}.cert.pem > ${INT_DIR}/certs/${INT_CA}-chain.cert.pem
+chmod 0400 ${INT_DIR}/certs/${INT_CA}-chain.cert.pem
+
+read -p "press <enter> to continue" DUMP
 
 #------------------------------------------------------------
 # create servers and clients
@@ -284,7 +292,9 @@ for SUBJECT in server1 server2 server3 client1 client2 client3; do
 
     echo -e "\nCreating ${SUBJECT} key"
     export SUB_PWD=${SUBJECT}
-    openssl genrsa -aes256 -out ${INT_DIR}/private/${SUBJECT}.key.pem -passout env:SUB_PWD 2048
+    openssl genrsa -aes256 \
+        -out ${INT_DIR}/private/${SUBJECT}.key.pem \
+        -passout env:SUB_PWD 2048
     chmod 0400 ${INT_DIR}/private/${SUBJECT}.key.pem
     
     echo -e "\nCreating ${SUBJECT} signing request"
@@ -305,7 +315,7 @@ for SUBJECT in server1 server2 server3 client1 client2 client3; do
         -in ${INT_DIR}/csr/${SUBJECT}.csr.pem \
         -out ${INT_DIR}/certs/${SUBJECT}.cert.pem \
         -batch \
-        -passin env:ROOT_PWD
+        -passin env:INT_PWD
     chmod 0444 ${INT_DIR}/certs/${SUBJECT}.cert.pem
 
     echo -e "\nVerifying ${SUBJECT} certificate"
@@ -313,8 +323,10 @@ for SUBJECT in server1 server2 server3 client1 client2 client3; do
         -in ${INT_DIR}/certs/${SUBJECT}.cert.pem
 
     echo -e "\nCreating ${SUBJECT} certificate chain"
-    openssl verify -CAfile ${INT_DIR}/certs/ca-chain.cert.pem \
+    openssl verify -CAfile ${INT_DIR}/certs/${INT_CA}-chain.cert.pem \
         ${INT_DIR}/certs/${SUBJECT}.cert.pem
+
+    read -p "press <enter> to continue" DUMP
 done
 
 #------------------------------------------------------------
@@ -322,7 +334,9 @@ done
 #------------------------------------------------------------
 
 echo -e "\nCreating ocsp key"
-openssl genrsa -aes256 -out ${INT_DIR}/private/${OCSP_ID}.key.pem -passout env:OCSP_PWD 4096
+openssl genrsa -aes256 \
+    -out ${INT_DIR}/private/${OCSP_ID}.key.pem \
+    -passout env:OCSP_PWD 4096
 chmod 0400 ${INT_DIR}/private/${OCSP_ID}.key.pem
 
 echo -e "\nCreating ocsp signing request"
@@ -342,7 +356,7 @@ openssl ca -config ${INT_DIR}/openssl.conf \
     -in ${INT_DIR}/csr/${OCSP_ID}.csr.pem \
     -out ${INT_DIR}/certs/${OCSP_ID}.cert.pem \
     -batch \
-    -passin env:ROOT_PWD
+    -passin env:INT_PWD
 chmod 0444 ${INT_DIR}/certs/${OCSP_ID}.cert.pem
 
 echo -e "\nVerifying ocsp certificate"
