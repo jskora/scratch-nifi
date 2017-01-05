@@ -1,4 +1,4 @@
-Scripts to facilitate creation and use of a self signed Certificate Authority (CA) infrastructure.
+Scripts to facilitate creation and use of a self signed SSL Certificate Authority (CA) infrastructure.
 
 script | description
 ------ | -----------
