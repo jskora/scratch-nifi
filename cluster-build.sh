@@ -32,11 +32,14 @@ JCE_UNZIPPED_PATH="UnlimitedJCEPolicyJDK8"
 DISK[1]="/dev/xvdb"
 DISK[2]="/dev/xvdc"
 
-# define each repo mapping, empty for default on same volume as binaries
-REPO_CONT="/data1/content_repository"
-REPO_DATA="/data1/database_repository"
-REPO_FLOW="/data2/flowfile_repository"
-REPO_PROV="/data2/provenance_repository"
+# /etc/fstab line, device and mount point will be inserted
+FSTAB_PTRN="%s\t%s\tauto\tdefaults,nofail,noatime,comment=nifi\t0\t2"
+
+declare -A PROPS
+PROPS[nifi.content.repository.directory]=/data1/content_repository
+PROPS[nifi.database.directory]=/data1/database_repository
+PROPS[nifi.flowfile.repository.directory]=/data2/flowfile_repository
+PROPS[nifi.provenance.repository.directory]=/data2/provenance_repository
 
 # cluster independent script configuration
 #=================================================
@@ -320,6 +323,7 @@ set_xml() {
 if [ ! -d ${NIFI_ROOT} ]; then
 
     LOG "   download and uncompress nifi"
+
     NIFI_BIN_SRC_URL="${S3_BUILDS}/${NIFI_BIN_SRC}"
     mkdir -p ${NIFI_ROOT}
     pushd ${NIFI_ROOT}
@@ -329,6 +333,7 @@ if [ ! -d ${NIFI_ROOT} ]; then
     LOG "$(ls -l ${NIFI_ROOT})"
 
     LOG "   download certs and copy keys and property files into place"
+
     CERTS_BIN_SRC_URL="${S3_BUILDS}/${CERTS_BIN_SRC}"
     rm -rf ${CERTS_TEMP}
     mkdir ${CERTS_TEMP}
@@ -337,9 +342,12 @@ if [ ! -d ${NIFI_ROOT} ]; then
     popd
     mv ${NIFI_ROOT}/conf/nifi.properties ${NIFI_ROOT}/conf/nifi.properties.orig
     cp -p ${CERTS_TEMP}/$(printf ${NODE_HOST_PTRN} ${INST_INDEX})/* ${NIFI_ROOT}/conf/
-    # temp fix
-    sed -i "s@\(nifi.security.user.authorizer=\)=.*@\1=file-provider@" ${NIFI_PROPS}
     LOG "$(ls -l ${NIFI_ROOT}/conf)"
+
+    if [[ "${NIFI_VERSION}" = *"1.3.0"* ]]; then
+        # temp fix
+        set_prop "${NIFI_PROPS}" nifi.security.user.authorizer file-provider
+    fi
 
     LOG "   bootstrap.conf"
 
@@ -349,20 +357,27 @@ if [ ! -d ${NIFI_ROOT} ]; then
     LOG "   nifi.properties"
 
     LOG "      banner"
-    set_prop "${NIFI_PROPS}" nifi.ui.banner.text "${CLUSTER_NAME}"
+    set_prop "${NIFI_PROPS}" "nifi.ui.banner.text" "${CLUSTER_NAME}"
 
     LOG "      client auth"
-    set_prop "${NIFI_PROPS}" nifi.security.needClientAuth "true"
+    set_prop "${NIFI_PROPS}" "nifi.security.needClientAuth" "true"
 
     LOG "      cluster"
-    set_prop "${NIFI_PROPS}" nifi.cluster.is.node "true"
+    set_prop "${NIFI_PROPS}" "nifi.cluster.is.node" "true"
 
     LOG "      embedded zookeeper (for first ZK_NODES nodes)"
     if [ ${INST_INDEX} -le ${ZK_NODES} ]; then
-        set_prop "${NIFI_PROPS}" nifi.state.management.embedded.zookeeper.start "true"
+        set_prop "${NIFI_PROPS}" "nifi.state.management.embedded.zookeeper.start" "true"
         mkdir -p ${NIFI_ROOT}/state/zookeeper
         echo ${INST_INDEX} > ${ZK_MYID}
     fi
+
+    LOG "      other properties"
+    for KEY in ${!PROPS[@]}; do
+        VALUE=${PROPS[KEY]}
+        LOG "         ${KEY}=${VALUE}"
+        set_prop "${NIFI_PROPS}" "${KEY}" "${VALUE}"
+    done
 
     LOG "   zookeeper.properties"
 
@@ -380,11 +395,15 @@ if [ ! -d ${NIFI_ROOT} ]; then
     for IDX in $(seq 1 ${NIFI_NODES}); do
         NODE_NAME="$(printf "${NODE_HOST_PTRN}" ${IDX})"
         SVRS="${SVRS}$(printf "${PROP_PTRN}" "${IDX}" "${NODE_NAME}")\n"
-        CONNECT="${CONNECT},${NODE_NAME}:${NIFI_ZK_PORT}"
+        if [ $((${IDX})) -le $((${ZK_NODES})) ]; then
+            CONNECT="${CONNECT},${NODE_NAME}:${NIFI_ZK_PORT}"
+        fi
     done
     sed -ir "s@    </authorizer>@${SVRS}    </authorizer>@" ${NIFI_AUTHORIZERS}
     CONNECT=$(echo "${CONNECT}" | sed "s/^,//")
     set_prop "${NIFI_PROPS}" nifi.zookeeper.connect.string "${CONNECT}"
+
+    LOG "   state-management.xml"
     set_xml "${NIFI_STATE_MANAGEMENT}" "Connect String" "${CONNECT}"
 
     LOG "      ${NIFI_BIN_ENV} - force JDK"
@@ -424,24 +443,14 @@ for IDX in ${!DISK[@]}; do
     if [ "${DISK_FILE}" = "data" ]; then
         mkfs.ext4 ${DISK}
         mkdir ${DISK_DIR}
-	sed -ir "s@^${DISK}@#${DISK}@" /etc/fstab
-        echo "${DISK}   ${DISK_DIR} auto    defaults,nofail,noatime,comment=nifi    0   2" >> /etc/fstab
-	mount ${DISK}
+        chown -R ${NIFI_USER}: ${DISK_DIR}
+        chmod -R u+rwx,g+rws,o- ${DISK_DIR}
+
+        sed -ir "s@^${DISK}@#${DISK}@" /etc/fstab
+        printf "${FSTAB_PTRN}" "${DISK}" "${DISK_DIR}" >> /etc/fstab
+	    mount ${DISK}
     fi
 done
-
-LOG "   linking NiFi data directories"
-cfg_repo() {
-    if [ -n "${1}" ]; then
-        mkdir ${1}
-        chown -R ${NIFI_USER} ${1}
-        ln -s ${1} ${NIFI_ROOT}/${2}
-    fi
-}
-cfg_repo "${REPO_CONT}" "content_repository"
-cfg_repo "${REPO_DATA}" "database_repository"
-cfg_repo "${REPO_FLOW}" "flowfile_repository"
-cfg_repo "${REPO_PROV}" "provenance_repository"
 
 # nifi user and service
 #=================================================
@@ -456,13 +465,13 @@ chown -R root: ${JDK_ROOT}
 chmod -R 755 ${JDK_ROOT}
 
 LOG "   setting ownership of NiFi '${NIFI_ROOT}'"
-chown -R runnifi: ${NIFI_ROOT}
-chmod -R 770 ${NIFI_ROOT}
+chown -R ${NIFI_USER}: ${NIFI_ROOT}
+chmod -R u+rwx,g+rws,o- ${NIFI_ROOT}
 
 LOG "   adding nifi service"
 pushd ${NIFI_ROOT}
 bin/nifi.sh install
-systemctl enable nifi
+systemctl disable nifi
 popd
 
 # wrap it up
