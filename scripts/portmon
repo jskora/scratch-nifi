@@ -1,0 +1,36 @@
+#!/bin/bash
+
+IPREGEX="10.113.8.121"
+PORT="(3389|5910|4505)"
+colorize() {
+    sed -re "s/${2:-.*}/[3${1}m\0[0m/g"
+}
+
+TMPFILE=/tmp/check_ports-$$.txt
+cleanup() {
+    rm $TMPFILE
+}
+
+trap cleanup EXIT
+
+RANGE=$(sudo sysctl -a | grep local_port_range | cut -d"=" -f2 | sed "s/\t/-/g" | colorize 4 "[0]9]{1,5}")
+echo -n "[$(hostname)]  ${TMPFILE}  ${RANGE}"
+echo -n "  [$(echo 'incoming' | colorize 2 '.*')"
+echo -n "  $(echo 'outgoing' | colorize 3 '.*')"
+echo -n "  $(echo 'problem' | colorize 1 '.*')"
+echo "  $(echo 'note' | colorize 4)]"
+sudo netstat -pant | \
+    grep -E "^Proto|${IPREGEX}|:${PORT} .*LISTEN" | \
+    grep -vE ":22 " >${TMPFILE}
+awk '/java|WAIT/ { print $6 }' ${TMPFILE} | \
+    sort | \
+    uniq -c | \
+    colorize 1 ".*CLOSE_WAIT.*|.*TIME_WAIT.*" | \
+    tr -d '\n'
+echo ""
+cat ${TMPFILE} | \
+    colorize 2 "[0-9.]+:${PORT}[ \t]+[0-9.]+:[0-9\*]+" | \
+    colorize 3 "[0-9.]+:[0-9\*]+[ \t]+[0-9.]+:${PORT}" | \
+    colorize 1 "CLOSE_WAIT|TIME_WAIT|FIN_WAIT[1|2]*" | \
+    colorize 4 LISTEN
+

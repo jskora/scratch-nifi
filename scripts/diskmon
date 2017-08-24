@@ -1,0 +1,49 @@
+#!/bin/bash
+
+RED="[31m"
+YELLOW="[33m"
+RESET="[0m"
+if [ "$1" == "-b" ]; then
+    TGT=$2
+    if [ "${TGT:0:1}" != "/" ]; then
+        TGT="/${TGT}"
+    fi
+    ITER=0
+    for ROW in 0 1 2 3 4 5 6 7 8 9; do
+        row[$ROW]=""
+    done
+    while [ true ]; do
+        COLS=$(($(tput cols)-4))
+        tput clear
+        echo -n "$TGT"
+        USAGE=$(($(df -h $TGT | awk '/\'$TGT'/{print $5}' | tr -d '%') / 10))
+        for ROW in 0 1 2 3 4 5 6 7 8 9; do
+            if [ $USAGE -gt $((9 - $ROW)) ]; then
+                row[$ROW]="${row[$ROW]}*"
+            else
+                row[$ROW]="${row[$ROW]} "
+            fi
+            if [ ${#row[$ROW]} -ge $COLS ]; then
+                row[$ROW]="${row[$ROW]:$(($(#row[$ROW])-$COLS+1))}"
+            fi
+            if [ $ROW -le 2 ];then
+                COLOR=$RED
+            elif [ $ROW -le 4 ]; then
+                COLOR=$YELLOW
+            else
+                COLOR=""
+            fi
+            printf "\n%2d0 %s" $((10 - $ROW)) "${COLOR}${row[$ROW]}${RESET}"
+        done
+        sleep 1.0
+    done
+else
+    if [ "$1" == "-n" ]; then
+        DATA=$(df -h | awk '{printf("%5s %4s %s\n", $2, $5, $6)}')
+    else
+        DATA=$(df -h | awk '{printf("%5s %5s %5s %4s %s\n", $2, $3, $4, $5, $6)}')
+    fi
+    echo -e "$DATA" | \
+        sed -re "s/.* (100|[89][0-9])%.*$/${RED}\0${RESET}/g" | \
+        sed -re "s/.* [67][0-9]%.*$/${YELLOW}\0${RESET}/g"
+fi
